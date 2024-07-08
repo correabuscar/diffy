@@ -336,9 +336,9 @@ macro_rules! assert_patch {
         assert_eq!(Patch::from_str(&patch_str).unwrap(), patch);
         assert_eq!(Patch::from_bytes($expected.as_bytes()).unwrap(), bpatch);
         assert_eq!(Patch::from_bytes(&patch_bytes).unwrap(), bpatch);
-        assert_eq!(apply($old, &patch).unwrap(), $new);
+        assert_eq!(apply($old, &patch, false).unwrap(), $new);
         assert_eq!(
-            crate::apply_bytes($old.as_bytes(), &bpatch).unwrap(),
+            crate::apply_bytes($old.as_bytes(), &bpatch, false).unwrap(),
             $new.as_bytes()
         );
     };
@@ -442,7 +442,28 @@ The door of all subtleties!
 +The door of all subtleties!
 ";
     opts.set_context_len(0);
+    opts.unambiguous = false;
     assert_patch!(opts, lao, tzu, expected);
+    let expected_unambiguous = "\
+--- original
++++ modified
+@@ -1,5 +1,4 @@
+-The Way that can be told of is not the eternal Way;
+-The name that can be named is not the eternal name.
+ The Nameless is the origin of Heaven and Earth;
+-The Named is the mother of all things.
++The named is the mother of all things.
++
+ Therefore let there always be non-being,
+@@ -11 +10,4 @@
+   they have different names.
++They both may be called deep and profound.
++Deeper and more profound,
++The door of all subtleties!
+";
+
+    opts.unambiguous = true;
+    assert_patch!(opts, lao, tzu, expected_unambiguous);
 
     let expected = "\
 --- original
@@ -581,7 +602,7 @@ void Chunk_copy(Chunk *src, size_t src_start, Chunk *dst, size_t dst_start, size
  }
 ";
     let git_patch = Patch::from_str(expected_git).unwrap();
-    assert_eq!(apply(original, &git_patch).unwrap(), a);
+    assert_eq!(apply(original, &git_patch, false).unwrap(), a);
 
     let expected_diffy = "\
 --- original
@@ -655,7 +676,7 @@ Second:
 
     let now = std::time::Instant::now();
 
-    let result = apply(original, &patch).unwrap();
+    let result = apply(original, &patch, false).unwrap();
 
     let elapsed = now.elapsed();
 
@@ -683,7 +704,7 @@ fn reverse_empty_file() {
         }
     }
 
-    let re_reverse = apply(&apply("", &p).unwrap(), &reverse).unwrap();
+    let re_reverse = apply(&apply("", &p, false).unwrap(), &reverse, false).unwrap();
     assert_eq!(re_reverse, "");
 }
 
@@ -703,6 +724,6 @@ Kupluh, Indeed
     let p = create_patch(original, modified);
     let reverse = p.reverse();
 
-    let re_reverse = apply(&apply(original, &p).unwrap(), &reverse).unwrap();
+    let re_reverse = apply(&apply(original, &p, false).unwrap(), &reverse, false).unwrap();
     assert_eq!(re_reverse, original);
 }

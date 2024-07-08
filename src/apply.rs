@@ -86,28 +86,73 @@ impl<T: ?Sized> Clone for ImageLine<'_, T> {
 ///     I will protect those who cannot protect themselves.
 /// ";
 ///
-/// assert_eq!(apply(base_image, &patch).unwrap(), expected);
+/// assert_eq!(apply(base_image, &patch, false).unwrap(), expected);
 /// ```
-pub fn apply(base_image: &str, patch: &Patch<'_, str>) -> Result<String, ApplyError> {
+pub fn apply(
+    base_image: &str,
+    patch: &Patch<'_, str>,
+    unambiguous: bool,
+) -> Result<String, ApplyError> {
     let mut image: Vec<_> = LineIter::new(base_image)
         .map(ImageLine::Unpatched)
         .collect();
 
+    if unambiguous {
+        for (i, hunk) in patch.hunks().iter().enumerate() {
+            //unambiguously apply each hunk independently, on the original file.
+            let mut fresh_image = image.clone();
+            apply_hunk(&mut fresh_image, hunk, /*unambiguous:*/ true)
+                .map_err(|_| ApplyError(i + 1))?;
+        }
+    }
+    //if unambiguous and the above 'if for' succeeded, then the below cannot fail!
+    //FIXME: ok, it could fail if any prev. hunks that got applied created a new place of a subsequent hunk to be applied to! thus now having 2 spots where it could apply!
     for (i, hunk) in patch.hunks().iter().enumerate() {
-        apply_hunk(&mut image, hunk).map_err(|_| ApplyError(i + 1))?;
+        let res = apply_hunk(&mut image, hunk, unambiguous).map_err(|_| ApplyError(i + 1));
+        if let Err(e) = res {
+            if !unambiguous {
+                return Err(e);
+            } else {
+                //it's unambiguous
+                panic!("apply str Should not have failed to apply, this means some coding logic error is afoot! err:'{}'",e);
+            }
+        }
     }
 
     Ok(image.into_iter().map(ImageLine::into_inner).collect())
 }
 
 /// Apply a non-utf8 `Patch` to a base image
-pub fn apply_bytes(base_image: &[u8], patch: &Patch<'_, [u8]>) -> Result<Vec<u8>, ApplyError> {
+pub fn apply_bytes(
+    base_image: &[u8],
+    patch: &Patch<'_, [u8]>,
+    unambiguous: bool,
+) -> Result<Vec<u8>, ApplyError> {
     let mut image: Vec<_> = LineIter::new(base_image)
         .map(ImageLine::Unpatched)
         .collect();
 
+    if unambiguous {
+        for (i, hunk) in patch.hunks().iter().enumerate() {
+            //unambiguously apply each hunk independently, on the original file.
+            let mut fresh_image = image.clone();
+            apply_hunk(&mut fresh_image, hunk, /*unambiguous:*/ true)
+                .map_err(|_| ApplyError(i + 1))?;
+        }
+    }
+    //if unambiguous and the above 'if for' succeeded, then the below cannot fail!
+    //FIXME: ok, it could fail if any prev. hunks that got applied created a new place of a subsequent hunk to be applied to! thus now having 2 spots where it could apply!
     for (i, hunk) in patch.hunks().iter().enumerate() {
-        apply_hunk(&mut image, hunk).map_err(|_| ApplyError(i + 1))?;
+        let res = apply_hunk(&mut image, hunk, unambiguous).map_err(|_| ApplyError(i + 1));
+        if let Err(e) = res {
+            if !unambiguous {
+                // if ambiguous, error normally
+                return Err(e);
+            } else {
+                //it's unambiguous
+                panic!("apply bytes Should not have failed to apply, this means some coding logic error is afoot! actual err:'{}'",e);
+            }
+        }
     }
 
     Ok(image
@@ -120,9 +165,12 @@ pub fn apply_bytes(base_image: &[u8], patch: &Patch<'_, [u8]>) -> Result<Vec<u8>
 fn apply_hunk<'a, T: PartialEq + ?Sized>(
     image: &mut Vec<ImageLine<'a, T>>,
     hunk: &Hunk<'a, T>,
+    unambiguous: bool,
 ) -> Result<(), ()> {
     // Find position
-    let pos = find_position(image, hunk).ok_or(())?;
+    // this errs out even if, unambiguous==true and hunk cannot be unambiguously applied! ie. if it applies in more than 1 place!
+    let pos = find_position(image, hunk, unambiguous).ok_or(())?;
+    //println!("preFound pos: {:?}", pos);
 
     // update image
     image.splice(
@@ -130,6 +178,14 @@ fn apply_hunk<'a, T: PartialEq + ?Sized>(
         post_image(hunk.lines()).map(ImageLine::Patched),
     );
 
+    if unambiguous {
+        if let Some(_pos2) = find_position(image, hunk, /*unambiguous:*/ true) {
+            // if we got here, we didn't have any other position to apply the hunk, before applying it!
+            // but now that we've applied it, a new pos was created, due to applying it!
+            //panic!("postFound pos: {:?} which means the hunk we just applied created a new position for itself within itself; or find_position() is coded wrongly!", pos2);
+            return Err(());
+        }
+    }
     Ok(())
 }
 
@@ -142,6 +198,7 @@ fn apply_hunk<'a, T: PartialEq + ?Sized>(
 fn find_position<T: PartialEq + ?Sized>(
     image: &[ImageLine<T>],
     hunk: &Hunk<'_, T>,
+    unambiguous: bool,
 ) -> Option<usize> {
     // In order to avoid searching through positions which are out of bounds of the image,
     // clamp the starting position based on the length of the image
@@ -152,9 +209,29 @@ fn find_position<T: PartialEq + ?Sized>(
     let backward = (0..pos).rev();
     let forward = pos + 1..image.len();
 
-    iter::once(pos)
-        .chain(interleave(backward, forward))
-        .find(|&pos| match_fragment(image, hunk.lines(), pos))
+    if !unambiguous {
+        //ambiguous, find&return only the first position, if any
+        iter::once(pos)
+            .chain(interleave(backward, forward))
+            .find(|&pos| match_fragment(image, hunk.lines(), pos))
+    } else {
+        let elements: Vec<usize> = iter::once(pos)
+            .chain(interleave(backward, forward))
+            .filter(|&pos| match_fragment(image, hunk.lines(), pos))
+            .collect();
+        if elements.len() != 1 {
+            // 0 or more than 1 positions found! pretend we found none
+
+            //if elements.len() > 1 {
+            //    println!("Found more than 1 positions for hunk, positions: {:?}", elements);
+            //}
+
+            None
+        } else {
+            // exactly 1 pos
+            Some(elements[0])
+        }
+    }
 }
 
 fn pre_image_line_count<T: ?Sized>(lines: &[Line<'_, T>]) -> usize {

@@ -45,8 +45,11 @@ where
 #[derive(Debug)]
 pub struct DiffOptions {
     compact: bool,
+    unambiguous: bool,
     context_len: usize,
 }
+
+const MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE: usize = 30;
 
 impl DiffOptions {
     /// Construct a new `DiffOptions` with default settings
@@ -56,6 +59,7 @@ impl DiffOptions {
     pub fn new() -> Self {
         Self {
             compact: true,
+            unambiguous: true,
             context_len: 3,
         }
     }
@@ -95,15 +99,103 @@ impl DiffOptions {
 
     /// Produce a Patch between two texts based on the configured options
     pub fn create_patch<'a>(&self, original: &'a str, modified: &'a str) -> Patch<'a, str> {
+        let mut patch: Patch<str>;
+        let mut context_len = self.context_len;
         let mut classifier = Classifier::default();
         let (old_lines, old_ids) = classifier.classify_lines(original);
         let (new_lines, new_ids) = classifier.classify_lines(modified);
 
         let solution = self.diff_slice(&old_ids, &new_ids);
 
-        let hunks = to_hunks(&old_lines, &new_lines, &solution, self.context_len);
-        Patch::new(Some("original"), Some("modified"), hunks)
+        loop {
+            let hunks = to_hunks(&old_lines, &new_lines, &solution, context_len);
+            //eprintln!("Hunks: {:?}, original: '{}', mod: '{}'", hunks, original, modified);
+            //doneFIXME: try each hunk independently, if it succeeds applying more than once TODO: increase context only for that hunk(somehow) while regenerating the patch!
+            patch = Patch::new(Some("original"), Some("modified"), hunks);
+            if !self.unambiguous || original.is_empty() || modified.is_empty() {
+                // if ambiguous, or
+                // if either inputs are empty
+                // trying to disambiguate will fail and reach MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE
+                // plus, it doesn't make sense to do.
+                break;
+            }
+            let patched = crate::apply(original, &patch, /*unambiguous:*/ true);
+            //TODO: detect here or inside apply() ? if any hunks succeeded, while unambiguous is true!
+            if patched.is_err() {
+                //increase context length for the entire patch(FIXME: only for the specific hunk, but beware hunks can be merged compared to a previous lower context length, so hunks count can change with increase in context!) and see if it's still ambiguous
+                context_len += 1;
+                if context_len > MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE {
+                    panic!("!! Failed to disambiguately generate patch due to reached max context length of '{}' and the patch was still ambiguous!", MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE);
+                    /* The correct word is "disambiguately."
+
+                    - **Disambiguate** is the verb meaning to make something clear by removing ambiguity.
+                    - **Disambiguation** is the noun form, referring to the process of removing ambiguity.
+                    - **Disambiguately** is the adverb form, describing an action done in a way that removes ambiguity.
+
+                    So, you would use "disambiguately" when describing an action performed in a manner that clarifies or removes ambiguity.
+                                        */
+                }
+            } else {
+                // it applied, unambiguously
+                // now let's see if what we patched is same as our initial modified file/contents
+                if patched.ok().unwrap() != modified {
+                    panic!("The generated patch applied on the original file, failed to reconstruct the modified file!");
+                } else {
+                    //if it is same, let's try to get back to our original!
+                    let expected_original=crate::apply(modified, &patch.reverse(), true);
+                    match expected_original {
+                        Err(e) => {
+                            panic!("Failed to apply the reversed patch on the modified file, error: '{}'", e);
+                        },
+                        Ok(orig) => {
+                            if original != orig {
+                                panic!("The reversed patch applied on the modified file, failed to reconstruct the original!");
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        } //loop
+        return patch;
     }
+
+//    pub fn create_patch2<'a, T>(&self, original: &'a T, modified: &'a T) -> Patch<'a, T>
+//    where
+//        T: AsRef<[u8]> + ToOwned + ?Sized,
+//    {
+//        let mut patch: Patch<'a, T>;
+//        let mut context_len = self.context_len;
+//        let mut classifier = Classifier::default();
+//
+//        let (old_lines, old_ids) = classifier.classify_lines(original.as_ref());
+//        let (new_lines, new_ids) = classifier.classify_lines(modified.as_ref());
+//
+//        let solution = self.diff_slice(&old_ids, &new_ids);
+//
+//        loop {
+//            let hunks = to_hunks(&old_lines, &new_lines, &solution, context_len);
+//            use std::borrow::Cow;
+//            patch = Patch::new(
+//                Some(Cow::Borrowed(original)),
+//                Some(Cow::Borrowed(modified)),
+//                hunks,
+//            );
+//            if !self.unambiguous || original.as_ref().is_empty() || modified.as_ref().is_empty() {
+//                break;
+//            }
+//            let patched = crate::apply(original.as_ref(), &patch, true);
+//            if patched.is_err() {
+//                context_len += 1;
+//                if context_len > MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE {
+//                    panic!("!! Failed to disambiguately generate patch due to reached max context length of '{}' and the patch was still ambiguous!", MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE);
+//                }
+//            } else {
+//                break;
+//            }
+//        }
+//        patch
+//    }
 
     /// Create a patch between two potentially non-utf8 texts
     pub fn create_patch_bytes<'a>(
@@ -111,14 +203,52 @@ impl DiffOptions {
         original: &'a [u8],
         modified: &'a [u8],
     ) -> Patch<'a, [u8]> {
+        let mut patch: Patch<'a, [u8]>;
+        let mut context_len = self.context_len;
+
         let mut classifier = Classifier::default();
         let (old_lines, old_ids) = classifier.classify_lines(original);
         let (new_lines, new_ids) = classifier.classify_lines(modified);
 
         let solution = self.diff_slice(&old_ids, &new_ids);
 
-        let hunks = to_hunks(&old_lines, &new_lines, &solution, self.context_len);
-        Patch::new(Some(&b"original"[..]), Some(&b"modified"[..]), hunks)
+        loop {
+            let hunks = to_hunks(&old_lines, &new_lines, &solution, context_len);
+            patch = Patch::new(Some(&b"original"[..]), Some(&b"modified"[..]), hunks);
+            if !self.unambiguous || original.is_empty() || modified.is_empty() {
+                break;
+            }
+            let patched = crate::apply_bytes(original, &patch, /*unambiguous:*/ true);
+            //TODO: detect here or inside apply_bytes() ? if any hunks succeeded, while unambiguous is true!
+            if patched.is_err() {
+                //increase context length for the entire patch(FIXME: only for the specific hunk, but beware hunks can be merged compared to a previous lower context length, so hunks count can change with increase in context!) and see if it's still ambiguous
+                context_len += 1;
+                if context_len > MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE {
+                    panic!("!! Failed to disambiguately generate patch due to reached max context length of '{}' and the patch was still ambiguous!", MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE);
+                }
+            } else {
+                // it applied, unambiguously
+                // now let's see if what we patched is same as our initial modified file/contents
+                if patched.ok().unwrap() != modified {
+                    panic!("The generated patch applied on the original file, failed to reconstruct the modified file!");
+                } else {
+                    //if it is same, let's try to get back to our original!
+                    let expected_original=crate::apply_bytes(modified, &patch.reverse(), true);
+                    match expected_original {
+                        Err(e) => {
+                            panic!("Failed to apply the reversed patch on the modified file, error: '{}'", e);
+                        },
+                        Ok(orig) => {
+                            if original != orig {
+                                panic!("The reversed patch applied on the modified file, failed to reconstruct the original!");
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        } //loop
+        return patch;
     }
 
     pub(crate) fn diff_slice<'a, T: PartialEq>(

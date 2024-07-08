@@ -132,7 +132,7 @@
 //!     until I find a more perfect Ideal.
 //! ";
 //!
-//! assert_eq!(apply(base_image, &patch).unwrap(), expected);
+//! assert_eq!(apply(base_image, &patch, false).unwrap(), expected);
 //! ```
 //!
 //! ## Performing a Three-way Merge
