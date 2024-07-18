@@ -64,6 +64,20 @@ impl DiffOptions {
         }
     }
 
+    /// if true, the generated patch will have hunks, that independently and also during patch application on the same original file, cannot be applied to different spots, in other words: if more spots were created during applying the previous hunks, but also if each hunk alone is applied to the original file, then trying to reapply the same hunk will always fail instead of finding another spot for it and succeed.
+    /// This is done by increasing context length (currently for the whole patch, tho ideally FIXME: for only the problematic hunk!) as needed to fulfil all that unambiguity.
+    /// Obviously this isn't enough to do in the 'diff', so 'patch' itself must also ensure unambiguity when applying it to a modified original which clearly could've added new spots for any of the hunks.
+    pub fn set_unambiguous(&mut self, unambiguous: bool) -> &mut Self {
+        self.unambiguous = unambiguous;
+        self
+    }
+
+    /// if true, it acts like gnu diff or git diff would normally do, and generate ambiguous patch(es) whose hunks can be possibly reapplied and thus can land in the wrong spot in a future modified original file. See the description for `set_unambiguous`
+    pub fn set_ambiguous(&mut self, ambiguous: bool) -> &mut Self {
+        self.unambiguous = !ambiguous;
+        self
+    }
+
     /// Set the number of context lines that should be used when producing a patch
     pub fn set_context_len(&mut self, context_len: usize) -> &mut Self {
         self.context_len = context_len;
