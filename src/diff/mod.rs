@@ -217,6 +217,17 @@ impl DiffOptions {
         original: &'a [u8],
         modified: &'a [u8],
     ) -> Patch<'a, [u8]> {
+        self.create_patch_bytes_with_labels(original, modified, &b"original"[..], &b"modified"[..])
+    }
+
+    /// Create a patch between two potentially non-utf8 texts
+    pub fn create_patch_bytes_with_labels<'a>(
+        &self,
+        original: &'a [u8],
+        modified: &'a [u8],
+        label_original: &'a [u8],
+        label_modified: &'a [u8],
+    ) -> Patch<'a, [u8]> {
         let mut patch: Patch<'a, [u8]>;
         let mut context_len = self.context_len;
 
@@ -228,7 +239,8 @@ impl DiffOptions {
 
         loop {
             let hunks = to_hunks(&old_lines, &new_lines, &solution, context_len);
-            patch = Patch::new(Some(&b"original"[..]), Some(&b"modified"[..]), hunks);
+            //patch = Patch::new(Some(&b"original"[..]), Some(&b"modified"[..]), hunks);
+            patch = Patch::new(Some(label_original), Some(label_modified), hunks);
             if !self.unambiguous || original.is_empty() || modified.is_empty() {
                 break;
             }
