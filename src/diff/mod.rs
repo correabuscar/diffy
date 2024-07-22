@@ -41,12 +41,24 @@ where
     }
 }
 
+/// what kind of unambiguity:
+/// `None` ~ so ambiguous aka normal
+/// `OnlyForwardPatch` ~ the generated unified diff will be unambiguous
+/// `BothForwardAndReversedPatches` ~ implies `OnlyForwardPatch` and the reversed patch of it is also unambiguous which typically means the context length is increased even more to make this happen in the case the normal patch added a new spot that the reverse will have to avoid.
+#[derive(Debug)]
+pub enum Unambiguous {
+    None,
+    OnlyForwardPatch,
+    BothForwardAndReversedPatches,
+}
+
 /// A collection of options for modifying the way a diff is performed
 #[derive(Debug)]
 pub struct DiffOptions {
     compact: bool,
-    unambiguous: bool,
+    unambiguous: Unambiguous,
     context_len: usize,
+    pub quiet: bool,
 }
 
 const MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE: usize = 30;
@@ -59,24 +71,25 @@ impl DiffOptions {
     pub fn new() -> Self {
         Self {
             compact: true,
-            unambiguous: true,
+            unambiguous: Unambiguous::BothForwardAndReversedPatches,
             context_len: 3,
+            quiet: true,
         }
     }
 
     /// if true, the generated patch will have hunks, that independently and also during patch application on the same original file, cannot be applied to different spots, in other words: if more spots were created during applying the previous hunks, but also if each hunk alone is applied to the original file, then trying to reapply the same hunk will always fail instead of finding another spot for it and succeed.
     /// This is done by increasing context length (currently for the whole patch, tho ideally FIXME: for only the problematic hunk!) as needed to fulfil all that unambiguity.
     /// Obviously this isn't enough to do in the 'diff', so 'patch' itself must also ensure unambiguity when applying it to a modified original which clearly could've added new spots for any of the hunks.
-    pub fn set_unambiguous(&mut self, unambiguous: bool) -> &mut Self {
+    pub fn set_unambiguous(&mut self, unambiguous: Unambiguous) -> &mut Self {
         self.unambiguous = unambiguous;
         self
     }
 
-    /// if true, it acts like gnu diff or git diff would normally do, and generate ambiguous patch(es) whose hunks can be possibly reapplied and thus can land in the wrong spot in a future modified original file. See the description for `set_unambiguous`
-    pub fn set_ambiguous(&mut self, ambiguous: bool) -> &mut Self {
-        self.unambiguous = !ambiguous;
-        self
-    }
+//    /// if true, it acts like gnu diff or git diff would normally do, and generate ambiguous patch(es) whose hunks can be possibly reapplied and thus can land in the wrong spot in a future modified original file. See the description for `set_unambiguous`
+//    pub fn set_ambiguous(&mut self, ambiguous: bool) -> &mut Self {
+//        self.unambiguous = !ambiguous;
+//        self
+//    }
 
     /// Set the number of context lines that should be used when producing a patch
     pub fn set_context_len(&mut self, context_len: usize) -> &mut Self {
@@ -126,13 +139,21 @@ impl DiffOptions {
             //eprintln!("Hunks: {:?}, original: '{}', mod: '{}'", hunks, original, modified);
             //doneFIXME: try each hunk independently, if it succeeds applying more than once TODO: increase context only for that hunk(somehow) while regenerating the patch!
             patch = Patch::new(Some("original"), Some("modified"), hunks);
-            if !self.unambiguous || original.is_empty() || modified.is_empty() {
-                // if ambiguous, or
-                // if either inputs are empty
-                // trying to disambiguate will fail and reach MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE
-                // plus, it doesn't make sense to do.
-                break;
-            }
+            match self.unambiguous {
+                Unambiguous::None => {
+                    // if ambiguous, or
+                    break;
+                },
+                _ => {
+                    if original.is_empty() || modified.is_empty() {
+                        // if either inputs are empty
+                        // trying to disambiguate will fail and reach MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE
+                        // plus, it doesn't make sense to do.
+                        break;
+                    }
+                    //else carry on, because we have some unambiguity to ensure!
+                }
+            }//match
             let patched = crate::apply(original, &patch, /*unambiguous:*/ true);
             //TODO: detect here or inside apply() ? if any hunks succeeded, while unambiguous is true!
             if patched.is_err() {
@@ -156,9 +177,15 @@ impl DiffOptions {
                     panic!("The generated patch applied on the original file, failed to reconstruct the modified file!");
                 } else {
                     //if it is same, let's try to get back to our original!
-                    let expected_original=crate::apply(modified, &patch.reverse(), true);
+                    let reversed_patch_should_be_unambiguous:bool=match self.unambiguous {
+                        Unambiguous::OnlyForwardPatch => false,
+                        Unambiguous::BothForwardAndReversedPatches => true,
+                        Unambiguous::None => unreachable!("bad coding"),
+                    };//match
+                    let expected_original=crate::apply(modified, &patch.reverse(), reversed_patch_should_be_unambiguous);
                     match expected_original {
                         Err(e) => {
+                            //FIXME: this isn't in sync with the create_patch_bytes() implementation!
                             panic!("Failed to apply the reversed patch on the modified file, error: '{}'", e);
                         },
                         Ok(orig) => {
@@ -230,6 +257,7 @@ impl DiffOptions {
     ) -> Patch<'a, [u8]> {
         let mut patch: Patch<'a, [u8]>;
         let mut context_len = self.context_len;
+        //let mod_clone=Vec::from(modified);
 
         let mut classifier = Classifier::default();
         let (old_lines, old_ids) = classifier.classify_lines(original);
@@ -241,14 +269,26 @@ impl DiffOptions {
             let hunks = to_hunks(&old_lines, &new_lines, &solution, context_len);
             //patch = Patch::new(Some(&b"original"[..]), Some(&b"modified"[..]), hunks);
             patch = Patch::new(Some(label_original), Some(label_modified), hunks);
-            if !self.unambiguous || original.is_empty() || modified.is_empty() {
-                break;
-            }
+            match self.unambiguous {
+                Unambiguous::None => {
+                    break;
+                },
+                _ => {
+                    if original.is_empty() || modified.is_empty() {
+                        break;
+                    }
+                    //else carry on, because we have some unambiguity to ensure!
+                }
+            }//match
+            // generate forward patch unambiguously
             let patched = crate::apply_bytes(original, &patch, /*unambiguous:*/ true);
             //TODO: detect here or inside apply_bytes() ? if any hunks succeeded, while unambiguous is true!
             if patched.is_err() {
                 //increase context length for the entire patch(FIXME: only for the specific hunk, but beware hunks can be merged compared to a previous lower context length, so hunks count can change with increase in context!) and see if it's still ambiguous
                 context_len += 1;
+                if !self.quiet {
+                    eprintln!("Failed to apply forward patch unambiguously, next retrying to generate the patch with bigger context length of '{}' lines.", context_len);
+                }
                 if context_len > MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE {
                     panic!("!! Failed to disambiguately generate patch due to reached max context length of '{}' and the patch was still ambiguous!", MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE);
                 }
@@ -259,19 +299,51 @@ impl DiffOptions {
                     panic!("The generated patch applied on the original file, failed to reconstruct the modified file!");
                 } else {
                     //if it is same, let's try to get back to our original!
-                    let expected_original=crate::apply_bytes(modified, &patch.reverse(), true);
+                    let reversed_patch=patch.reverse();
+                    //assert_eq!(modified, mod_clone);
+                    //FIXME: using 'false' for unambiguous application here because this reversed patch sometimes fails to unambiguously apply, and it's unclear if it shouldn't. Hmm, well if I wanted to unambiguously undo it, then I guess it should work.
+                    let reversed_patch_should_be_unambiguous:bool=match self.unambiguous {
+                        Unambiguous::OnlyForwardPatch => false,
+                        Unambiguous::BothForwardAndReversedPatches => true,
+                        Unambiguous::None => unreachable!("bad coding"),
+                    };//match
+                    let expected_original=crate::apply_bytes(modified, &reversed_patch, reversed_patch_should_be_unambiguous);
                     match expected_original {
                         Err(e) => {
-                            panic!("Failed to apply the reversed patch on the modified file, error: '{}'", e);
+                            let err=format!("Failed to apply the reversed patch, unambiguously?('{}'), on the modified file, error: '{}'.", reversed_patch_should_be_unambiguous, e);
+                            if !reversed_patch_should_be_unambiguous {
+                                panic!("{}", err);
+                            }
+                            //std::fs::write("/tmp/FAILpatch.orig", &original).unwrap();
+                            //std::fs::write("/tmp/FAILpatch.patch", &patch.to_bytes()).unwrap();
+                            //std::fs::write("/tmp/FAILpatch.patched", &modified).unwrap();
+                            //std::fs::write("/tmp/FAILpatch.rev.patch", &reversed_patch.to_bytes()).unwrap();
+                            //panic!("{}, saved the relevants as /tmp/FAIL*", err);
+                            context_len += 1;
+                            if !self.quiet {
+                                eprintln!("{}, attempting to redo with increased context length aka lines of '{}'.", err, context_len);
+                            }
+                            if context_len > MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE {
+                                panic!("!! Failed to unambiguously generate reversed patch due to reached max context length of '{}' and the reversed patch was still ambiguous!", MAX_CONTEXT_LENGTH_TO_DISAMBIGUATE);
+                            } else {
+                                //continue the loop
+                                continue;
+                            }
                         },
                         Ok(orig) => {
                             if original != orig {
                                 panic!("The reversed patch applied on the modified file, failed to reconstruct the original!");
+                            } else {
+                                break;
                             }
                         }
                     }
                 }
-                break;
+                //break;
+                #[allow(unreachable_code)]
+                {
+                    unreachable!();
+                }
             }
         } //loop
         return patch;
@@ -290,7 +362,7 @@ impl DiffOptions {
 
         solution
     }
-}
+}//DiffOptions
 
 impl Default for DiffOptions {
     fn default() -> Self {
