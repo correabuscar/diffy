@@ -318,8 +318,20 @@ fn hunk_lines<'a, T: Text + ?Sized>(parser: &mut Parser<'a, T>) -> Result<Vec<Li
                     Line::Insert(strip_newline(line)?)
                 }
             }
+//        //} else if line.starts_with("#") {
+//        } else {
+//            //lines.pop();
+//            lines.pop().ok_or_else(|| {
+//                ParsePatchError::new(format!("failed to ignore commented out line that's not part of any hunk: '{}'",
+//                        //line.as_str().unwrap_or("<non-utf8 line>")
+//                        String::from_utf8_lossy(line.as_bytes())
+//                        )
+//                    )
+//            })?;
+//            parser.next()?;
+//            continue;
         } else {
-            return Err(ParsePatchError::new("unexpected line in hunk body"));
+            return Err(ParsePatchError::new(format!("unexpected line in hunk body, line='{:?}'", line.as_str().unwrap_or("<non-utf8 line>"))));
         };
 
         lines.push(line);

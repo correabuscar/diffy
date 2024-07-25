@@ -120,6 +120,8 @@ pub fn apply(
     }
 
     Ok(image.into_iter().map(ImageLine::into_inner).collect())
+//    let res=apply_bytes(base_image, patch.as_bytes(), unambiguous);
+//    res.map(|vec| String::from_utf8(vec).expect("The input base image and patch were UTF8 but the resulting of applying the patch onto the base image isn't valid UTF8, which is very odd indeed!"))
 }
 
 /// Apply a non-utf8 `Patch` to a base image
