@@ -90,27 +90,30 @@ struct PatchDisplay<'a, T: ToOwned + ?Sized> {
 
 impl<T: ToOwned + AsRef<[u8]> + ?Sized> PatchDisplay<'_, T> {
     fn write_into<W: io::Write>(&self, mut w: W) -> io::Result<()> {
-        if self.patch.original.is_some() || self.patch.modified.is_some() {
-            if self.f.with_color {
-                write!(w, "{}", self.f.patch_header.prefix())?;
+        let hunks=&self.patch.hunks;
+        if hunks.len() > 0 {
+            if self.patch.original.is_some() || self.patch.modified.is_some() {
+                if self.f.with_color {
+                    write!(w, "{}", self.f.patch_header.prefix())?;
+                }
+                if let Some(original) = &self.patch.original {
+                    write!(w, "--- ")?;
+                    original.write_into(&mut w)?;
+                    writeln!(w)?;
+                }
+                if let Some(modified) = &self.patch.modified {
+                    write!(w, "+++ ")?;
+                    modified.write_into(&mut w)?;
+                    writeln!(w)?;
+                }
+                if self.f.with_color {
+                    write!(w, "{}", self.f.patch_header.suffix())?;
+                }
             }
-            if let Some(original) = &self.patch.original {
-                write!(w, "--- ")?;
-                original.write_into(&mut w)?;
-                writeln!(w)?;
-            }
-            if let Some(modified) = &self.patch.modified {
-                write!(w, "+++ ")?;
-                modified.write_into(&mut w)?;
-                writeln!(w)?;
-            }
-            if self.f.with_color {
-                write!(w, "{}", self.f.patch_header.suffix())?;
-            }
-        }
 
-        for hunk in &self.patch.hunks {
-            self.f.write_hunk_into(hunk, &mut w)?;
+            for hunk in hunks {
+                self.f.write_hunk_into(hunk, &mut w)?;
+            }
         }
 
         Ok(())
@@ -119,23 +122,26 @@ impl<T: ToOwned + AsRef<[u8]> + ?Sized> PatchDisplay<'_, T> {
 
 impl Display for PatchDisplay<'_, str> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        if self.patch.original.is_some() || self.patch.modified.is_some() {
-            if self.f.with_color {
-                write!(f, "{}", self.f.patch_header.prefix())?;
+        let hunks=&self.patch.hunks;
+        if hunks.len() > 0 {
+            if self.patch.original.is_some() || self.patch.modified.is_some() {
+                if self.f.with_color {
+                    write!(f, "{}", self.f.patch_header.prefix())?;
+                }
+                if let Some(original) = &self.patch.original {
+                    writeln!(f, "--- {}", original)?;
+                }
+                if let Some(modified) = &self.patch.modified {
+                    writeln!(f, "+++ {}", modified)?;
+                }
+                if self.f.with_color {
+                    write!(f, "{}", self.f.patch_header.suffix())?;
+                }
             }
-            if let Some(original) = &self.patch.original {
-                writeln!(f, "--- {}", original)?;
-            }
-            if let Some(modified) = &self.patch.modified {
-                writeln!(f, "+++ {}", modified)?;
-            }
-            if self.f.with_color {
-                write!(f, "{}", self.f.patch_header.suffix())?;
-            }
-        }
 
-        for hunk in &self.patch.hunks {
-            write!(f, "{}", self.f.fmt_hunk(hunk))?;
+            for hunk in hunks {
+                write!(f, "{}", self.f.fmt_hunk(hunk))?;
+            }
         }
 
         Ok(())
