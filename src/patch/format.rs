@@ -231,12 +231,8 @@ impl<T: AsRef<[u8]> + ?Sized> LineDisplay<'_, T> {
             write!(w, "{}", style.prefix())?;
         }
 
-        if sign == ' ' && line == b"\n" {
-            w.write_all(line)?;
-        } else {
             write!(w, "{}", sign)?;
             w.write_all(line)?;
-        }
 
         if self.f.with_color {
             write!(w, "{}", style.suffix())?;
@@ -263,11 +259,7 @@ impl Display for LineDisplay<'_, str> {
             write!(f, "{}", style.prefix())?;
         }
 
-        if sign == ' ' && *line == "\n" {
-            write!(f, "{}", line)?;
-        } else {
             write!(f, "{}{}", sign, line)?;
-        }
 
         if self.f.with_color {
             write!(f, "{}", style.suffix())?;
